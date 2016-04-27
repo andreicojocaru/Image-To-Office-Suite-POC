@@ -2,7 +2,6 @@
 {
     using System.Drawing;
     using System.IO;
-    using System.Linq;
 
     using DocumentFormat.OpenXml;
     using DocumentFormat.OpenXml.Packaging;
@@ -13,6 +12,10 @@
 
     static class WordDocumentBuilder
     {
+        const int StandardPpi = 72;
+        const int EmuPerInch = 914400;
+        const int EmuRatioForPageSize = EmuPerInch / StandardPpi / 20;
+
         public static void BuildDocumentWithImage(string document, string imagePath)
         {
             using (var wordprocessingDocument =
@@ -28,47 +31,85 @@
                     imagePart.FeedData(stream);
                 }
 
-                AddImageToBody(wordprocessingDocument, mainPart.GetIdOfPart(imagePart), imagePath);
+                var pageSize = SetPageSize(mainPart);
+                var pageMargin = SetPageMargin(mainPart);
+
+                using (var stream = imagePart.GetStream(FileMode.Open))
+                {
+                    var imagePartId = mainPart.GetIdOfPart(imagePart);
+
+                    var firstImageParagraph = GetImageParagraph(pageSize, pageMargin, imagePartId, stream);
+                    var secondImageParagraph = GetImageParagraph(pageSize, pageMargin, imagePartId, stream);
+
+                    mainPart.Document.Body.Append(firstImageParagraph);
+                    mainPart.Document.Body.Append(secondImageParagraph);
+                }
             }
         }
 
-        private static void AddImageToBody(WordprocessingDocument wordDoc, string relationshipId, string imagePath)
+        private static PageMargin SetPageMargin(MainDocumentPart documentPart)
+        {
+            var sectionProps = new SectionProperties();
+            var pageMargin = new PageMargin() { Top = 400, Right = 400, Bottom = 400, Left = 400 };
+            sectionProps.Append(pageMargin);
+            documentPart.Document.Body.Append(sectionProps);
+
+            return pageMargin;
+        }
+
+        private static PageSize SetPageSize(MainDocumentPart docPart)
+        {
+            /*
+             The international default letter size is ISO 216 A4 (210x297mm ~ 8.3×11.7in) and expressed as this:
+               // pageSize: with and height in 20th of a point
+                <w:pgSz w:w="11906" w:h="16838"/>
+             */
+            var sectionProps = new SectionProperties();
+            var pageSize = new PageSize() { Width = 11906, Height = 16838 };
+
+            sectionProps.Append(pageSize);
+            docPart.Document.Body.Append(sectionProps);
+
+            return pageSize;
+        }
+
+        private static Paragraph GetImageParagraph(PageSize pageSize, PageMargin pageMargin, string relationshipId, Stream imageStream)
         {
             //How OOXML units work: https://startbigthinksmall.wordpress.com/2010/01/04/points-inches-and-emus-measuring-units-in-office-open-xml/
+            var extents = GetImageExtentsFor(pageSize, pageMargin, imageStream);
+            var drawingElement = GetDrawingElement(extents, relationshipId, 0);
 
-            var pageSize = SetPageSize(wordDoc.MainDocumentPart);
-            var pageMargin = SetPageMargin(wordDoc.MainDocumentPart);
+            return new Paragraph(new Run(drawingElement));
+        }
 
-            const int StandardPpi = 72;
-            const int EmuPerInch = 914400;
-            const int EmuRatioForPageSize = EmuPerInch / StandardPpi / 20;
-
+        private static A.Extents GetImageExtentsFor(PageSize pageSize, PageMargin pageMargin, Stream imageStream)
+        {
             var xPageMargin = (pageMargin.Left.Value + pageMargin.Right.Value) * EmuRatioForPageSize;
             var yPageMargin = (pageMargin.Top.Value + pageMargin.Bottom.Value) * EmuRatioForPageSize;
 
-            var bitmap = new Bitmap(imagePath);
-            var imageRatio = bitmap.Height / (float)bitmap.Width;
-
-            var emuBitmapWidth = bitmap.Width * (long)(EmuPerInch / bitmap.HorizontalResolution);
-            var emuBitmapHeight = bitmap.Height * (long)(EmuPerInch / bitmap.VerticalResolution);
-
-            var emuImageWidth = (long)(pageSize.Width.Value * EmuRatioForPageSize) - xPageMargin;
-            var emuImageHeight = (long)(pageSize.Width.Value * imageRatio * EmuRatioForPageSize) - yPageMargin;
-
-            // if image is larger than A4 page size, then rescale the image to A4
-            // if the image is smaller, use the image's size
-            var extents = new A.Extents
+            using (var bitmap = new Bitmap(imageStream))
             {
-                Cx = emuBitmapWidth > emuImageWidth ? emuImageWidth : emuBitmapWidth,
-                Cy = emuBitmapHeight > emuImageHeight ? emuImageHeight : emuBitmapWidth,
-            };
+                var imageRatio = bitmap.Height / (float)bitmap.Width;
 
-            bitmap.Dispose();
+                var emuBitmapWidth = bitmap.Width * (long)(EmuPerInch / bitmap.HorizontalResolution);
+                var emuBitmapHeight = bitmap.Height * (long)(EmuPerInch / bitmap.VerticalResolution);
 
-            // Define the reference of the image.
-            var element =
-     new Drawing(
-         new DW.Inline(
+                var emuImageWidth = (long)(pageSize.Width.Value * EmuRatioForPageSize) - xPageMargin;
+                var emuImageHeight = (long)(pageSize.Width.Value * imageRatio * EmuRatioForPageSize) - yPageMargin;
+
+                // if image is larger than A4 page size, then rescale the image to A4
+                // if the image is smaller, use the image's size
+                return new A.Extents
+                {
+                    Cx = emuBitmapWidth > emuImageWidth ? emuImageWidth : emuBitmapWidth,
+                    Cy = emuBitmapHeight > emuImageHeight ? emuImageHeight : emuBitmapWidth,
+                };
+            }
+        }
+
+        private static Drawing GetDrawingElement(A.Extents extents, string relationshipId, UInt32Value elementId)
+        {
+            return new Drawing(new DW.Inline(
              new DW.Extent() { Cx = extents.Cx, Cy = extents.Cy },
              new DW.EffectExtent()
              {
@@ -80,7 +121,7 @@
              new DW.DocProperties()
              {
                  Id = (UInt32Value)1U,
-                 Name = "Picture 1"
+                 Name = $"Picture {elementId}"
              },
              new DW.NonVisualGraphicFrameDrawingProperties(
                  new A.GraphicFrameLocks() { NoChangeAspect = true }),
@@ -90,8 +131,8 @@
                          new PIC.NonVisualPictureProperties(
                              new PIC.NonVisualDrawingProperties()
                              {
-                                 Id = (UInt32Value)0U,
-                                 Name = "New Bitmap Image.jpg"
+                                 Id = elementId,
+                                 Name = $"BitmapImage{elementId}.jpg"
                              },
                              new PIC.NonVisualPictureDrawingProperties()),
                          new PIC.BlipFill(
@@ -116,42 +157,13 @@
                  )
                  { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
          )
-         {
-             DistanceFromTop = (UInt32Value)0U,
-             DistanceFromBottom = (UInt32Value)0U,
-             DistanceFromLeft = (UInt32Value)0U,
-             DistanceFromRight = (UInt32Value)0U,
-             EditId = "50D07946"
-         });
-
-            // Append the reference to body, the element should be in a Run.
-            wordDoc.MainDocumentPart.Document.Body.Append(new Paragraph(new Run(element)));
-        }
-
-        private static PageMargin SetPageMargin(MainDocumentPart documentPart)
-        {
-            var sectionProps = new SectionProperties();
-            var pageMargin = new PageMargin() { Top = 100, Right = 100, Bottom = 100, Left = 100 };
-            sectionProps.Append(pageMargin);
-            documentPart.Document.Body.Append(sectionProps);
-
-            return pageMargin;
-        }
-
-        private static PageSize SetPageSize(MainDocumentPart docPart)
-        {
-            /*
-             The international default letter size is ISO 216 A4 (210x297mm ~ 8.3×11.7in) and expressed as this:
-               // pageSize: with and height in 20th of a point
-                <w:pgSz w:w="11906" w:h="16838"/>
-             */
-            var sectionProps = new SectionProperties();
-            var pageSize = new PageSize() { Width = 11906, Height = 16838 };
-
-            sectionProps.Append(pageSize);
-            docPart.Document.Body.Append(sectionProps);
-
-            return pageSize;
+            {
+                DistanceFromTop = (UInt32Value)0U,
+                DistanceFromBottom = (UInt32Value)0U,
+                DistanceFromLeft = (UInt32Value)0U,
+                DistanceFromRight = (UInt32Value)0U,
+                EditId = "50D07946"
+            });
         }
     }
 }

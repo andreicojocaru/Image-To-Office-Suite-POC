@@ -10,9 +10,9 @@
 
             var imagePath = @"C:\Temp\output.png";
 
-            ExcelDocumentBuilder.BuildDocumentWithImage(excelFilePath, imagePath);
+            //ExcelDocumentBuilder.BuildDocumentWithImage(excelFilePath, imagePath);
             WordDocumentBuilder.BuildDocumentWithImage(wordFilePath, imagePath);
-            PdfDocumentBuilder.BuildDocumentWithImage(pdfFilePath, imagePath);
+            //PdfDocumentBuilder.BuildDocumentWithImage(pdfFilePath, imagePath);
         }
     }
 }
