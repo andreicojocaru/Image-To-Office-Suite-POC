@@ -1,5 +1,6 @@
 ﻿namespace ImageToOfficeSuitePOC
 {
+    using System;
     using System.Drawing;
     using System.IO;
 
@@ -10,79 +11,72 @@
     using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
     using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
 
-    static class WordDocumentBuilder
+    class WordDocumentBuilder : IDisposable
     {
         const int StandardPpi = 72;
         const int EmuPerInch = 914400;
         const int EmuRatioForPageSize = EmuPerInch / StandardPpi / 20;
 
-        public static void BuildDocumentWithImage(string document, string imagePath)
+        private readonly WordprocessingDocument document;
+        private readonly MainDocumentPart mainPart;
+
+        private readonly PageSize pageSize;
+        private readonly PageMargin pageMargin;
+
+        /*
+         * 
+         * [PageSize: with and height in 20th of a point]
+         * 
+         * The international default letter size is ISO 216 A4 (210x297mm ~ 8.3×11.7in) and expressed as this:
+         * <w:pageSize w:w="11906" w:h="16838"/>
+         * https://startbigthinksmall.wordpress.com/2010/01/04/points-inches-and-emus-measuring-units-in-office-open-xml/
+         */
+        public WordDocumentBuilder(string documentPath)
         {
-            using (var wordprocessingDocument =
-                WordprocessingDocument.Create(document, WordprocessingDocumentType.Document))
+            document = WordprocessingDocument.Create(documentPath, WordprocessingDocumentType.Document);
+
+            mainPart = document.AddMainDocumentPart();
+            mainPart.Document = new Document(new Body());
+
+            var size = new PageSize() { Width = 11906, Height = 16838 };
+            var margin = new PageMargin() { Top = 200, Right = 200, Bottom = 200, Left = 200 };
+
+            var sectionProps = new SectionProperties();
+            sectionProps.Append(size, margin);
+
+            mainPart.Document.Body.Append(sectionProps);
+
+            pageSize = size;
+            pageMargin = margin;
+        }
+
+        public void AddImageToDocument(string imagePath)
+        {
+            var imagePart = mainPart.AddImagePart(ImagePartType.Png);
+
+            using (var stream = new FileStream(imagePath, FileMode.Open))
             {
-                var mainPart = wordprocessingDocument.AddMainDocumentPart();
-                mainPart.Document = new Document(new Body());
+                imagePart.FeedData(stream);
+            }
 
-                var imagePart = mainPart.AddImagePart(ImagePartType.Png);
+            using (var stream = imagePart.GetStream(FileMode.Open))
+            {
+                var imagePartId = mainPart.GetIdOfPart(imagePart);
+                var imageParagraph = GetImageParagraph(imagePartId, stream);
 
-                using (var stream = new FileStream(imagePath, FileMode.Open))
-                {
-                    imagePart.FeedData(stream);
-                }
-
-                var pageSize = SetPageSize(mainPart);
-                var pageMargin = SetPageMargin(mainPart);
-
-                using (var stream = imagePart.GetStream(FileMode.Open))
-                {
-                    var imagePartId = mainPart.GetIdOfPart(imagePart);
-
-                    var firstImageParagraph = GetImageParagraph(pageSize, pageMargin, imagePartId, stream);
-                    var secondImageParagraph = GetImageParagraph(pageSize, pageMargin, imagePartId, stream);
-
-                    mainPart.Document.Body.Append(firstImageParagraph);
-                    mainPart.Document.Body.Append(secondImageParagraph);
-                }
+                mainPart.Document.Body.Append(imageParagraph);
             }
         }
 
-        private static PageMargin SetPageMargin(MainDocumentPart documentPart)
+        private Paragraph GetImageParagraph(string relationshipId, Stream imageStream)
         {
-            var sectionProps = new SectionProperties();
-            var pageMargin = new PageMargin() { Top = 400, Right = 400, Bottom = 400, Left = 400 };
-            sectionProps.Append(pageMargin);
-            documentPart.Document.Body.Append(sectionProps);
-
-            return pageMargin;
-        }
-
-        private static PageSize SetPageSize(MainDocumentPart docPart)
-        {
-            /*
-             The international default letter size is ISO 216 A4 (210x297mm ~ 8.3×11.7in) and expressed as this:
-               // pageSize: with and height in 20th of a point
-                <w:pgSz w:w="11906" w:h="16838"/>
-             */
-            var sectionProps = new SectionProperties();
-            var pageSize = new PageSize() { Width = 11906, Height = 16838 };
-
-            sectionProps.Append(pageSize);
-            docPart.Document.Body.Append(sectionProps);
-
-            return pageSize;
-        }
-
-        private static Paragraph GetImageParagraph(PageSize pageSize, PageMargin pageMargin, string relationshipId, Stream imageStream)
-        {
-            //How OOXML units work: https://startbigthinksmall.wordpress.com/2010/01/04/points-inches-and-emus-measuring-units-in-office-open-xml/
-            var extents = GetImageExtentsFor(pageSize, pageMargin, imageStream);
+            var extents = GetImageExtentsFor(imageStream);
             var drawingElement = GetDrawingElement(extents, relationshipId, 0);
 
             return new Paragraph(new Run(drawingElement));
         }
 
-        private static A.Extents GetImageExtentsFor(PageSize pageSize, PageMargin pageMargin, Stream imageStream)
+        private A.Extents GetImageExtentsFor(Stream imageStream)
         {
             var xPageMargin = (pageMargin.Left.Value + pageMargin.Right.Value) * EmuRatioForPageSize;
             var yPageMargin = (pageMargin.Top.Value + pageMargin.Bottom.Value) * EmuRatioForPageSize;
@@ -91,8 +85,8 @@
             {
                 var imageRatio = bitmap.Height / (float)bitmap.Width;
 
-                var emuBitmapWidth = bitmap.Width * (long)(EmuPerInch / bitmap.HorizontalResolution);
-                var emuBitmapHeight = bitmap.Height * (long)(EmuPerInch / bitmap.VerticalResolution);
+                var emuOriginalWidth = bitmap.Width * (long)(EmuPerInch / bitmap.HorizontalResolution);
+                var emuOriginalHeight = bitmap.Height * (long)(EmuPerInch / bitmap.VerticalResolution);
 
                 var emuImageWidth = (long)(pageSize.Width.Value * EmuRatioForPageSize) - xPageMargin;
                 var emuImageHeight = (long)(pageSize.Width.Value * imageRatio * EmuRatioForPageSize) - yPageMargin;
@@ -101,8 +95,8 @@
                 // if the image is smaller, use the image's size
                 return new A.Extents
                 {
-                    Cx = emuBitmapWidth > emuImageWidth ? emuImageWidth : emuBitmapWidth,
-                    Cy = emuBitmapHeight > emuImageHeight ? emuImageHeight : emuBitmapWidth,
+                    Cx = emuOriginalWidth > emuImageWidth ? emuImageWidth : emuOriginalWidth,
+                    Cy = emuOriginalHeight > emuImageHeight ? emuImageHeight : emuOriginalHeight
                 };
             }
         }
@@ -164,6 +158,11 @@
                 DistanceFromRight = (UInt32Value)0U,
                 EditId = "50D07946"
             });
+        }
+
+        public void Dispose()
+        {
+            this.document.Dispose();
         }
     }
 }
