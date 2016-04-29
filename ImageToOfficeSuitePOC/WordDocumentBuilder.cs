@@ -1,18 +1,24 @@
 ﻿namespace ImageToOfficeSuitePOC
 {
     using System;
+    using System.Collections.Generic;
     using System.Drawing;
+    using System.Drawing.Imaging;
     using System.IO;
 
     using DocumentFormat.OpenXml;
     using DocumentFormat.OpenXml.Packaging;
+    using DocumentFormat.OpenXml.Spreadsheet;
     using DocumentFormat.OpenXml.Wordprocessing;
     using A = DocumentFormat.OpenXml.Drawing;
+    using Drawing = DocumentFormat.OpenXml.Wordprocessing.Drawing;
     using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
     using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
+    using Run = DocumentFormat.OpenXml.Wordprocessing.Run;
 
     class WordDocumentBuilder : IDisposable
     {
+        const int StandardA4Height = 4760;
         const int StandardPpi = 72;
         const int EmuPerInch = 914400;
         const int EmuRatioForPageSize = EmuPerInch / StandardPpi / 20;
@@ -52,53 +58,97 @@
 
         public void AddImageToDocument(string imagePath)
         {
-            var imagePart = mainPart.AddImagePart(ImagePartType.Png);
-
-            using (var stream = new FileStream(imagePath, FileMode.Open))
+            using (var imageStream = new FileStream(imagePath, FileMode.Open))
             {
-                imagePart.FeedData(stream);
-            }
+                PrettyPrint($"Processing image: {imagePath}", ConsoleColor.Green);
+                var images = GetImagesPerPage(imageStream);
 
-            using (var stream = imagePart.GetStream(FileMode.Open))
-            {
-                var imagePartId = mainPart.GetIdOfPart(imagePart);
-                var imageParagraph = GetImageParagraph(imagePartId, stream);
+                foreach (var bitmap in images)
+                {
+                    using (var stream = new MemoryStream())
+                    {
+                        bitmap.Save(stream, ImageFormat.Png);
+                        stream.Position = 0;
 
-                mainPart.Document.Body.Append(imageParagraph);
+                        var documentImagePart = mainPart.AddImagePart(ImagePartType.Png);
+                        documentImagePart.FeedData(stream);
+
+                        var extent = GetImageExtentsFor(bitmap);
+                        PrettyPrint($"Extents: Cx={extent.Cx,5}, Cy={extent.Cy,5}", ConsoleColor.Cyan);
+
+                        var drawingElement = GetDrawingElement(extent, mainPart.GetIdOfPart(documentImagePart), 0);
+
+                        var p = new Paragraph(new Run(drawingElement));
+                        mainPart.Document.Body.Append(p);
+                    }
+                }
             }
         }
 
-        private Paragraph GetImageParagraph(string relationshipId, Stream imageStream)
+        private IEnumerable<Bitmap> GetImagesPerPage(Stream imageStream)
         {
-            var extents = GetImageExtentsFor(imageStream);
-            var drawingElement = GetDrawingElement(extents, relationshipId, 0);
+            using (var sourceBitmap = new Bitmap(imageStream))
+            {
+                var pxImageWidth = sourceBitmap.Width;
+                var pxImageHeight = sourceBitmap.Height;
+                var pxPageHeight = StandardA4Height;// - pageMargin.Bottom;
 
-            return new Paragraph(new Run(drawingElement));
+                if (pxImageHeight > pxPageHeight)
+                {
+                    var numSections = Math.Ceiling(pxImageHeight / (float)pxPageHeight);
+                    var pxCropHeight = pxPageHeight;
+
+                    for (var i = 0; i < numSections; i++)
+                    {
+                        var pxCropStart = pxCropHeight * i;
+
+                        if (pxCropStart + pxCropHeight > pxImageHeight)
+                        {
+                            pxCropHeight = pxImageHeight - pxCropStart;
+                        }
+
+                        var cropRectangle = new Rectangle(0, pxCropStart, pxImageWidth, pxCropHeight);
+
+                        Console.WriteLine($"Rectangle: Y={cropRectangle.Y,5}, Height={cropRectangle.Height,5}");
+
+                        var target = sourceBitmap.Clone(cropRectangle, sourceBitmap.PixelFormat);
+
+                        yield return target;
+                    }
+                }
+                else
+                {
+                    PrettyPrint($"Rectangle: Y=0, Height={sourceBitmap.Height,5}", ConsoleColor.Red);
+                    yield return sourceBitmap;
+                }
+            }
         }
 
-        private A.Extents GetImageExtentsFor(Stream imageStream)
+        private A.Extents GetImageExtentsFor(Bitmap bitmap)
         {
             var xPageMargin = (pageMargin.Left.Value + pageMargin.Right.Value) * EmuRatioForPageSize;
             var yPageMargin = (pageMargin.Top.Value + pageMargin.Bottom.Value) * EmuRatioForPageSize;
 
-            using (var bitmap = new Bitmap(imageStream))
+            var imageRatio = bitmap.Height / (float)bitmap.Width;
+
+            var emuOriginalWidth = bitmap.Width * (long)(EmuPerInch / bitmap.HorizontalResolution);
+            var emuOriginalHeight = bitmap.Height * (long)(EmuPerInch / bitmap.VerticalResolution);
+
+            var emuImageWidth = (long)(pageSize.Width.Value * EmuRatioForPageSize) - xPageMargin;
+            var emuImageHeight = (long)(pageSize.Width.Value * imageRatio * EmuRatioForPageSize) - yPageMargin;
+
+            if (emuImageHeight < 0)
             {
-                var imageRatio = bitmap.Height / (float)bitmap.Width;
-
-                var emuOriginalWidth = bitmap.Width * (long)(EmuPerInch / bitmap.HorizontalResolution);
-                var emuOriginalHeight = bitmap.Height * (long)(EmuPerInch / bitmap.VerticalResolution);
-
-                var emuImageWidth = (long)(pageSize.Width.Value * EmuRatioForPageSize) - xPageMargin;
-                var emuImageHeight = (long)(pageSize.Width.Value * imageRatio * EmuRatioForPageSize) - yPageMargin;
-
-                // if image is larger than A4 page size, then rescale the image to A4
-                // if the image is smaller, use the image's size
-                return new A.Extents
-                {
-                    Cx = emuOriginalWidth > emuImageWidth ? emuImageWidth : emuOriginalWidth,
-                    Cy = emuOriginalHeight > emuImageHeight ? emuImageHeight : emuOriginalHeight
-                };
+                emuImageHeight = emuOriginalHeight;
             }
+
+            // if image is larger than A4 page size, then rescale the image to A4
+            // if the image is smaller, use the image's size
+            return new A.Extents
+            {
+                Cx = emuOriginalWidth > emuImageWidth ? emuImageWidth : emuOriginalWidth,
+                Cy = emuOriginalHeight > emuImageHeight ? emuImageHeight : emuOriginalHeight
+            };
         }
 
         private static Drawing GetDrawingElement(A.Extents extents, string relationshipId, UInt32Value elementId)
@@ -163,6 +213,13 @@
         public void Dispose()
         {
             this.document.Dispose();
+        }
+
+        private static void PrettyPrint(string message, ConsoleColor color)
+        {
+            Console.ForegroundColor = color;
+            Console.WriteLine(message);
+            Console.ResetColor();
         }
     }
 }

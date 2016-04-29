@@ -15,10 +15,10 @@
 
             using (var documentBuilder = new WordDocumentBuilder(wordFilePath))
             {
-                documentBuilder.AddImageToDocument(@"C:\Temp\8k_big_image.png");
-                //documentBuilder.AddImageToDocument(@"C:\Temp\output.png");
-                //documentBuilder.AddImageToDocument(@"C:\Temp\Bar Chart Page_latest.png");
-                //documentBuilder.AddImageToDocument(@"C:\Temp\output.png");
+                documentBuilder.AddImageToDocument(@"C:\Temp\3k.png");
+                documentBuilder.AddImageToDocument(@"C:\Temp\6k.png");
+                documentBuilder.AddImageToDocument(@"C:\Temp\9k.png");
+                documentBuilder.AddImageToDocument(@"C:\Temp\14k.png");
             }
         }
     }
