@@ -1,4 +1,4 @@
-﻿namespace ImageToOfficeSuitePOC
+﻿namespace BankBI.Web.Services.DocumentGenerators.Builders
 {
     using System;
     using System.Collections.Generic;
@@ -8,12 +8,14 @@
 
     using DocumentFormat.OpenXml;
     using DocumentFormat.OpenXml.Packaging;
-    using DocumentFormat.OpenXml.Spreadsheet;
     using DocumentFormat.OpenXml.Wordprocessing;
+
     using A = DocumentFormat.OpenXml.Drawing;
     using Drawing = DocumentFormat.OpenXml.Wordprocessing.Drawing;
     using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
+    using Paragraph = DocumentFormat.OpenXml.Wordprocessing.Paragraph;
     using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
+    using Rectangle = System.Drawing.Rectangle;
     using Run = DocumentFormat.OpenXml.Wordprocessing.Run;
 
     class WordDocumentBuilder : IDisposable
@@ -45,7 +47,7 @@
             mainPart.Document = new Document(new Body());
 
             var size = new PageSize() { Width = 11906, Height = 16838 };
-            var margin = new PageMargin() { Top = 200, Right = 200, Bottom = 200, Left = 200 };
+            var margin = new PageMargin() { Top = 700, Right = 700, Bottom = 700, Left = 700 };
 
             var sectionProps = new SectionProperties();
             sectionProps.Append(size, margin);
@@ -91,7 +93,7 @@
             {
                 var pxImageWidth = sourceBitmap.Width;
                 var pxImageHeight = sourceBitmap.Height;
-                var pxPageHeight = StandardA4Height;// - pageMargin.Bottom;
+                var pxPageHeight = StandardA4Height + EmuPerInch / pageMargin.Top;
 
                 if (pxImageHeight > pxPageHeight)
                 {
@@ -140,6 +142,11 @@
             if (emuImageHeight < 0)
             {
                 emuImageHeight = emuOriginalHeight;
+            }
+
+            if (imageRatio < 1)
+            {
+                emuImageHeight += yPageMargin;
             }
 
             // if image is larger than A4 page size, then rescale the image to A4
